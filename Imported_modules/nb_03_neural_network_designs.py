@@ -40,6 +40,7 @@ from sklearn.metrics import classification_report
 # %tensorflow_version 1.x
 import tensorflow as tf
 
+from tensorflow.keras import Sequential
 from tensorflow.keras.models import Model, model_from_json
 from tensorflow.keras.layers import Input, Activation, InputSpec
 from tensorflow.python.keras.layers import Conv1D, Conv2D
@@ -120,112 +121,19 @@ class GlobalMaxPoolingSp2D(Layer):
         base_config = super(GlobalMaxPoolingSp2D, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
 
-"""General functions used to add:
-*   convolutional layers
-*   max pooling layers
-*   fully connected layers
-"""
 
-def addConvolutionalLayers(output, num_pix, num_filter, kernel_size, API=True):
-  """
-  Function to add convolutional and max pooling layers to the model
-  @params defined in the main CNN function buildModel---()
-  @API :: boolean that decides wether to add layers sequenctially or using API
-  """
-  if API:
-    kernel_size = (kernel_size, 1)
-    conv = Conv2D(num_filter, kernel_size, strides= (1,1),\
-                      padding='same')(output) 
-    output = Activation('relu')(conv)
-  # adds layers sequentially
-  else: 
-    in_shape = (num_pix, None, 1) 
-    kernel_size = (kernel_size, 1)
-    strides = (1,1)
-    # adds convolutional layers
-    output.add(Conv2D(num_filter, kernel_size, strides=strides, \
-                    padding='same', input_shape = in_shape, activation='relu'))
-  return output
-
-def addPoolingLayers(output, maxpoolsize, API=True):
-  """
-  Function adds pooling layers to the CNN
-  @output :: output from the layer
-  @maxpoolsize :: pool size value
-  @API :: boolean that decides wether to add layers sequenctially or using API
-  """
-  if maxpoolsize is not None:
-    if API:
-      poolsize = (maxpoolsize,1)
-      output = MaxPooling2D(pool_size=poolsize, strides =(maxpoolsize,1))(output)       
-    else:
-      poolsize = (maxpoolsize,1)
-      output.add(MaxPooling2D(pool_size=poolsize, strides =(maxpoolsize,1)))       
-  return output
-
-def addFullyConnectedLayers(output, num_hidden_nodes, dropout_ratio, r_0,\
-                            API=True):
-  """
-  Function to add fully connected layers to the model
-  @num_hidden_nodes :: no. of nodes in the layers prior to the output layer
-  @dropout_ratio :: weight constrain in the dropout layers
-  @r_0 :: len(r_0) defines the no. of nodes in the output layer
-  @API :: boolean that decides wether to add layers sequenctially or using API
-  """
-  # post CNN; fully connected layers
-  for i, nodes in enumerate(num_hidden_nodes):
-    if API:
-      hidden = Dense(nodes, activation='sigmoid')(output)
-      activ = Activation('sigmoid')(hidden)
-      output = Dropout(dropout_ratio)(hidden)    
-    else:
-      output.add(Dense(nodes, activation='sigmoid'))
-      output.add(Dropout(dropout_ratio))
-  return output
 
 """## 3. Neural Network Architectures
-
-### 3.1 Convolutional Neural Network: Design 1
-
-The following uses the `keras` Sequential models
 """
 
-def buildModelCNN1(num_pix, num_filter, kernel_size, maxpoolsize,\
-                   num_hidden_nodes, r_0):
-  """
-  Function to build the model architecture, set optimizers and compile the model 
-  @num_pix :: used to define the shape of the input layer
-  @num_filter :: arr with the ascending order of filters in the conv2D layers
-  @kernel_size :: arr with the kernel sizes for the corresponding conv2D layers
-  @maxpoolsize :: arr with the pool sizes for the corresponding conv2D layers
-  @num_hidden_nodes :: no. of nodes in the FNN layer right after the CNN
-  @r_0 :: array of all the scale radii
-  
-  @Returns:: model
-  """
-  model = Sequential()
-  
-  # adding convolutional and pooling layers
-  model = addConvolutionalLayers(model, num_pix, num_filter, kernel_size, API=False)
-  model = addPoolingLayers(model, maxpoolsize, API=False)
-  model.add(GlobalMaxPoolingSp2D())
-  model.add(Flatten())
-  
-  # fully connected layers; added dropout these layer with weight constraint
-  model = addFullyConnectedLayers(model, num_pix, num_hidden_nodes,\
-                                  dropout_ratio, r_0, API=False)
-  # final output layer
-  model.add(Dense(len(r_0), activation='softmax'))
-  
-  return model
 
 """### 3.2 Convolutional Neural Network: Design 2
 
 This CNN accounts for batch normalization unlike the first case. Additionally, used Keras functional API for more flexibitity.
 """
 
-def buildModelCNN2(num_pix, num_filter, kernel_size, maxpoolsize, num_hidden, \
-                   dropout_ratio, shortcut, batch_norm, length_traj, r_0):
+def defineNetworkDesignCNN(num_filter, kern_size, maxpoolsize, num_hidden_nodes,\
+                           dropout_ratio, shortcut_link, batch_norm, length_traj, R_value):
   """
   Function to build the model architecture, set optimizers and compile the model 
   @num_pix :: used to define the shape of the input layer  
@@ -240,54 +148,59 @@ def buildModelCNN2(num_pix, num_filter, kernel_size, maxpoolsize, num_hidden, \
   
   @Returns:: model output
   """
-  #input layer
-  visible = Input(shape=(length_traj, None, 1))
-  output = visible
-
-  # skip connection variables
-  execute_skip = False
-  idx = 0
-
-  for i in range(len(num_filter)):
-    # shortcut path/ skip connection
-    if shortcut and not execute_skip and shortcut[idx] == i:
-      out_shortcut = output
-      execute_skip = True
-      idx += 1
-    
-    # feature extractors
-    conv = addConvolutionalLayers(output, num_pix, num_filter[i], kernel_size[i],\
-                                  API=True)
-    # batch normalization, activation
-    if batch_norm: 
-      conv = BatchNormalization()(conv)  
-    conv = Activation('selu')(conv)
-
-    # execute skip connection
-    if shortcut and execute_skip and shortcut[idx] == i:
-      conv = Concatenate(3)([conv, out_shortcut])
-      execute_skip = False
-      idx += 1
-
-    # adds max pooling layers
-    conv = addPoolingLayers(conv, maxpoolsize[i], API=True)
-    
-  pool = GlobalMaxPoolingSp2D()(conv)
-  flat = Flatten()(pool)
+  input_shape = (length_traj, None, 1)
   
-  # fully connected layers; added dropout these layer with weight constraint
-  hidden = addFullyConnectedLayers(flat, num_hidden, dropout_ratio, r_0, \
-                                  API=True)
-  output = Dense(len(r_0))(hidden)
-  output = Activation('softmax')(output)
-
-  return visible, output
-
-"""### 3.3 Residual neural network: ResNet"""
-
-def defineResnet(num_pix, num_filter, kern_size, n_block, maxpoolsize,\
-                 num_hidden, dropout_ratio, r_0, batch_norm = True):
+  #Define the network architecture
+  inputs = Input(shape=input_shape)
+  outputs = inputs
   
+  is_shortcut = False
+  cur_shortcut = 0
+  
+  for m1 in range(len(num_filter)):
+    if shortcut_link and not is_shortcut and shortcut_link[cur_shortcut] == m1:
+      out_shortcut = outputs
+      is_shortcut = True
+      cur_shortcut += 1
+      
+    outputs = Conv2D(filters=num_filter[m1], kernel_size = [kern_size[m1], 1],\
+                     strides= [1,1], padding='same')(outputs)
+    
+    if batch_norm:
+      outputs = BatchNormalization()(outputs)
+    
+    outputs = Activation('selu')(outputs)
+    
+    if shortcut_link and is_shortcut and shortcut_link[cur_shortcut] == m1:
+      outputs = Concatenate(3)([outputs,out_shortcut])
+      is_shortcut = False
+      cur_shortcut += 1
+    
+    if maxpoolsize[m1] is not None:
+      outputs = MaxPooling2D([maxpoolsize[m1],1], strides=[maxpoolsize[m1],1])(outputs) 
+
+  outputs = GlobalMaxPoolingSp2D()(outputs)
+  outputs = Flatten()(outputs)
+
+  outputs = Dense(num_hidden_nodes)(outputs)
+  outputs = Activation('sigmoid')(outputs)
+  outputs = Dropout(dropout_ratio)(outputs)
+
+  outputs = Dense(len(R_value))(outputs)
+  outputs = Activation('softmax')(outputs)
+
+  return inputs, outputs
+
+
+"""### 3.3 Residual neural network: ResNet
+
+The function `define_network_design_resnet` is Martin and Kevin's version while in the following code block, `defineResnet` is the function that I rewrote with some minor changes.
+"""
+
+def defineNetworkDesignResnet(num_pix, num_filter, kern_size, n_block, \
+                                 maxpoolsize, num_hidden, dropout_ratio, R_value,\
+                                 batch_norm = True):
+  "Martin-Kevin's version copy-pasted"
   input_shape = (num_pix, None, 1)
   
   #Define the network architecture
@@ -315,57 +228,50 @@ def defineResnet(num_pix, num_filter, kern_size, n_block, maxpoolsize,\
       outputs = Activation('sigmoid')(outputs)
       outputs = Dropout(dropout_ratio)(outputs)
 
-  outputs = Dense(len(r_0))(outputs)
+  outputs = Dense(len(R_value))(outputs)
   outputs = Activation('softmax')(outputs)
 
   return inputs, outputs
 
-"""The function in the following code block is yet work under progress. Aim is to modify the previous ResNet."""
 
-def buildModelResNet(num_pix, num_filter, kernel_size, n_block, maxpoolsize, num_hidden, \
-                dropout_ratio, batch_norm):
-  """
-  Function to build the model architecture, set optimizers and compile the model 
-  @num_pix :: used to define the shape of the input layer
-  @num_filters :: arr with the ascending order of filters in the conv2D layers
-  @kernel_size :: arr with the kernel sizes for the corresponding conv2D layers
-  @n_block :: int decides the no. of conv layers
-  @maxpoolsize :: arr with the pool sizes for the corresponding conv2D layers
-  @num_hidden :: no. of nodes in the fully connected layer right after the CNN
-  @dropout_ratio :: weight constrain on the dropout layer of the FNN 
-  @bath_norm :: bool decided wether or not to normalize the output from a layer
-  @r_0 :: array of all the scale radii
-  
-  @Returns:: model output
-  """
-  visible = Input(shape=(num_pix, None, 1))
-  shortcut = visible
+def compileResNet(sample_params, r_0, save_image_dir, learning_rate, momentum):
+	"""
+	Function builds the model Resnet defined above and compiles it used for optimization
+	@sample_params :: [num_samples, num_samples_max, num_pix]
+	@r_0 :: array containing all the radii to be classified
+	@save_image_dir :: path to the image directory
+	@learning_rate :: rate which the weights are updated during training
+	@momentum :: amount that smooths the progressions of the learning algorithm
 
-  for i in range(n_block):
-    for n in range(len(num_filter)):
-      # adding convolutional layers
-      conv = addConvolutionalLayers(visible, num_pix, num_filter[n], kernel_size[n],\
-                                      API=True)
-    
-    conv = Add()([conv,shortcut])
-    # adds max pooling and normalizes the layer
-    conv = addPoolingLayers(conv, maxpoolsize, API=True)
-    if batch_norm: 
-      conv = BatchNormalization()(conv)
+	"""
+	# ResNet model parameters
+	num_filter = (32, 32, 32)
+	kern_size = (10,20,50)
+	n_block = 5
+	maxpoolsize = 3
+	num_hidden_nodes =[1000.0,]
+	dropout_ratio = 0.7 
+	batch_norm = True
+	sampling = 1
+	num_pieces = 1
 
-    # skip connection redefined
-    shortcut = conv
+	# build network
+	inputs, outputs = defineNetworkDesignResnet(sample_params[2], num_filter, \
+  kern_size, n_block, maxpoolsize, num_hidden_nodes, dropout_ratio, r_0, batch_norm)
 
-  pool = GlobalMaxPoolingSp2D()(conv)
-  flat = Flatten()(pool)
-  
-  # fully connected layers; added dropout these layer with weight constraint
-  hidden = addFullyConnectedLayers(flat, num_hidden_nodes, dropout_ratio, r_0, \
-                                  API=True)
-  output = Dense(len(r_0))(hidden)
-  output = Activation('softmax')(output)
-  
-  return visible, output
+	# ResNet compilation parameters
+	optimizer_type = SGD(lr=learning_rate, momentum = momentum)  
+	loss = 'categorical_crossentropy'  
+	metrics = ['categorical_accuracy'] 
+
+	# compiles network
+	model = compileDisplayNetwork(inputs, outputs, optimizer_type, loss, \
+	                                 metrics,save_image_dir+'ResNet', False)
+
+	#model.load_weights('/content/gdrive/My Drive/Colab_Notebooks/Deep_learning_for_optical_IMaging/Resnet_weights.h5')
+	print('Network created')
+	return model
+
 
 """## 4. Compiling and displaying the mdoel"""
 
@@ -387,7 +293,7 @@ def compileDisplayNetwork(inputs, outputs, optimizer_type, loss, metrics,\
     print(model.summary())
     # plot graph
     plot_model(model, to_file=filename+'.png')
-    return model
+  return model
 
 def saveModel(model, save_model_dir, model_name):
   """
@@ -463,78 +369,46 @@ def data_generator(data_in, data_out, num_inputs, batch_size, num_batch):
       
       yield data_in_batch, data_out_batch
 
-def fit_model_generator(model, data_in, data_out, num_inputs = 1, batch_size = 50, \
-                        epochs = 50, validation_split = 0.2, verbose = 1):
-  
-  if num_inputs == 1:
-    if data_in.ndim == 3:
-      history = model.fit(data_in.reshape(data_in.shape[0:2] + (1,) + (data_in.shape[2],)),\
-                          data_out, batch_size=batch_size, epochs=epochs, \
-                          verbose=verbose, validation_split=validation_split, shuffle=True)
-    else:
-      history = model.fit(data_in, data_out, batch_size=batch_size, epochs=epochs, \
-                          verbose=verbose, validation_split=validation_split, shuffle=True)
-  else:
-    data_ind = np.arange(len(data_out))
-    data_ind_train, data_ind_valid = train_test_split(data_ind, test_size=validation_split)
-    
-    num_batch_train, batch_size_train = compute_num_batch(data_out[data_ind_train],\
-                                                    num_inputs, batch_size, True)
-    num_batch_valid, batch_size_valid = compute_num_batch(data_out[data_ind_valid],\
-                                                    num_inputs, np.inf, False)
-    
-    history = model.fit_generator( \
-                generator = data_generator(data_in[data_ind_train], data_out[data_ind_train], \
-                  num_inputs, batch_size_train, num_batch_train), \
-                steps_per_epoch = num_batch_train, epochs = epochs, verbose =  verbose, \
-                validation_data = data_generator(data_in[data_ind_valid], data_out[data_ind_valid], \
-                  num_inputs, batch_size_valid, num_batch_valid), \
-                validation_steps = num_batch_valid)
-  
-  
-  return model, history
+def reshapeTrainX(trainX):
+	"Function reshapes 3D input array (X, X, 1) into a 4D array (X, X, 1, 1)"
+	return trainX.reshape(trainX.shape[0:2] + (1,) + (trainX.shape[2],))
 
-def evaluate_model(model, data_in, data_out, num_inputs = 1, verbose = 1):
-  
-  if num_inputs == 1:
-    data_in = data_in.reshape(data_in.shape[0:2] + (1,) + (data_in.shape[2],))
-  else:
-    num_batch, batch_size = compute_num_batch(data_out, num_inputs, np.inf, False)
-  
-    data_gen = data_generator(data_in, data_out, num_inputs, batch_size, num_batch)
-    data_in, data_out = next(data_gen)
-  
-  return model.evaluate(data_in, data_out, verbose = verbose)
+def trainModel(model, trainX, trainy, batch_size = 50, epochs = 50, validation_split = 0.2, verbose = 1):
+	"""
+	Function trains model for fixed number of epochs
+	"""
+	if trainX.ndim == 3:
+		trainX = reshapeTrainX(trainX)
 
-def predict_model(model, data_in, data_out, num_inputs = 1, verbose = 0):
-  
-  if num_inputs == 1:
-    if data_in.ndim == 3:
-      data_in = data_in.reshape(data_in.shape[0:2] + (1,) + (data_in.shape[2],))
-  else:
-    num_batch, batch_size = compute_num_batch(data_out, num_inputs, np.inf, False)
-    
-    data_gen = data_generator(data_in, data_out, num_inputs, batch_size, num_batch)
-    data_in, data_out = next(data_gen)
-    
-  data_predict = model.predict(data_in, verbose = verbose)
-  
-  return data_predict, data_out
+	model_history = model.fit(trainX, trainy, batch_size=batch_size, epochs=epochs, verbose=verbose, validation_split=validation_split, shuffle=True)
+	return model, model_history
+
+def evaluatePredictModel(model, testX, testy, verbose = 1):
+
+	"Function evaluates and predict the performace of the model"
+
+	testX = testX.reshape(testX.shape[0:2] + (1,) + (testX.shape[2],))
+	results = model.evaluate(testX, testy, verbose = verbose)
+	predictions = model.predict(testX, verbose = verbose)
+	return results, predictions
+
 
 """## 6. Sample and cut trajectories"""
 
 def prepareDataSampleCuts(data_in, sampling, num_pieces):
   
+  "Prepare data with sample cuts and evaluate residuals"
+
   reduced_shape = np.ceil(data_in.shape[1]/sampling) - 1
   length_piece = int(round(2*reduced_shape/(num_pieces + 1)))
   data_in_prep = np.zeros((len(data_in), length_piece, num_pieces, 1))
   
-  #Sampling
   for m1 in range(len(data_in)):
+    # sampling
     cur_data = data_in[m1,0:data_in.shape[1]:sampling,0]
     
     if m1 == 0:
-      print(cur_data.shape)
+      print('reshaped data', cur_data.shape)
     
     #The trajectory is cut such that half of the pieces is shared with each neighbor
     #For an array of length 8, if the array is cut into 3 pieces, the pieces are the following:
